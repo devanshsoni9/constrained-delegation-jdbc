@@ -12,9 +12,7 @@ import javax.security.auth.Subject;
 import javax.security.auth.login.LoginException;
 import javax.security.auth.spi.LoginModule;
 import java.io.InputStream;
-import java.net.URL;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
@@ -46,6 +44,17 @@ public class ConstrainedDelegationSample {
         }
     }
 
+    /**
+     *
+     * @param runAsUser
+     * @param impersonatedUser
+     * @param keytabPath
+     * @param connectionURI
+     * @param impersonate
+     * @param propertyFilePath
+     * @param jaasFilePath
+     * @throws Exception
+     */
     ConstrainedDelegationSample(String runAsUser, String impersonatedUser, String keytabPath, String connectionURI, boolean impersonate, String propertyFilePath, String jaasFilePath) throws Exception{
         this.runAsUser = runAsUser;
         this.impersonatedUser = impersonatedUser;
@@ -73,7 +82,7 @@ public class ConstrainedDelegationSample {
 
                 ResultSet result = con.createStatement().executeQuery(getQuery());
                 while (result.next()) {
-                    System.out.println(" User on DB: " + result.getString(1)); // .getString("SYSTEM_USER"));
+                    System.out.println(" User on DB: " + result.getString(1));
                 }
             } catch (Exception ex) {
 
@@ -86,7 +95,7 @@ public class ConstrainedDelegationSample {
 
                 ResultSet result = con.createStatement().executeQuery(getQuery());
                 while (result.next()) {
-                    System.out.println(" User on DB: " + result.getString(1)); // .getString("SYSTEM_USER"));
+                    System.out.println(" User on DB: " + result.getString(1));
                 }
             } catch (Exception ex) {
 
@@ -103,6 +112,10 @@ public class ConstrainedDelegationSample {
      *             2.runAsUser
      *             3.Impersonation User/Viewer
      *             4.keytab path of runAsUser
+     *             5.JDBC connectionURI
+     *             6.Is this constrained Delegation? - true/false
+     *             7.Connection Properties file path - absolute
+     *             8.JAAS Config File Path - absolute
      * @throws Exception
      */
     public static void main(String[] args) throws Exception{
@@ -180,7 +193,6 @@ public class ConstrainedDelegationSample {
         return Subject.doAs(this.serviceSubject, (PrivilegedExceptionAction<Connection>) () -> {
 
             Properties driverProperties = new Properties();
-            // These are driver specific properties for enabling Kerberos GSSAPI login - the ones here are valid for Postgres
             try (InputStream is = Files.newInputStream(Paths.get(this.propertyFilePath))) {
                 driverProperties.load(is);
             }
@@ -196,12 +208,10 @@ public class ConstrainedDelegationSample {
         return Subject.doAs(this.serviceSubject, (PrivilegedExceptionAction<Connection>) () -> {
 
             Properties driverProperties = new Properties();
-            // These are driver specific properties for enabling Kerberos GSSAPI login - the ones here are valid for Postgres
-          //  driverProperties.put("gsslib", "gssapi");
-          //  driverProperties.put("user", this.impersonatedUser);
             try (InputStream is = Files.newInputStream(Paths.get(this.propertyFilePath))) {
                 driverProperties.load(is);
             }
+            driverProperties.put("user", this.impersonatedUser);
             return DriverManager.getConnection(this.connectionURI, driverProperties);
         });
     }
@@ -212,8 +222,8 @@ public class ConstrainedDelegationSample {
     }
 
     protected String getQuery() {
-        // this query is valid in Postgres
-        return "SELECT current_user;";
+        // the current_user function works in for Presto Server 0.203 but NOT 0.167
+        return "SELECT current_user";
     }
 
 }
