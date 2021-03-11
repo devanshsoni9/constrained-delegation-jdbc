@@ -11,6 +11,11 @@ import org.ietf.jgss.Oid;
 import javax.security.auth.Subject;
 import javax.security.auth.login.LoginException;
 import javax.security.auth.spi.LoginModule;
+import java.io.InputStream;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.sql.Connection;
@@ -28,7 +33,9 @@ public class ConstrainedDelegationSample {
     private Subject             serviceSubject;
     private static Oid          krb5Oid;
     private GSSCredential       impersonationCredentials;
-    private static final String CONNECTION_URI = "jdbc:blahBlah";
+    private String connectionURI;
+    private String propertyFilePath;
+    private String jaasFilePath;
 
     static {
         try {
@@ -39,23 +46,43 @@ public class ConstrainedDelegationSample {
         }
     }
 
-    ConstrainedDelegationSample(String runAsUser, String impersonatedUser, String keytabPath) throws Exception{
+    ConstrainedDelegationSample(String runAsUser, String impersonatedUser, String keytabPath, String connectionURI, boolean impersonate, String propertyFilePath, String jaasFilePath) throws Exception{
         this.runAsUser = runAsUser;
         this.impersonatedUser = impersonatedUser;
+        this.jaasFilePath = jaasFilePath;
+        loadJAASConfiguration();
         this.serviceSubject = doInitialLogin(keytabPath);
-        try {
-            this.impersonationCredentials = kerberosImpersonate();
-        } catch (Exception ex) {
-            ex.printStackTrace();
+        this.connectionURI = connectionURI;
+        this.propertyFilePath = propertyFilePath;
+        if (impersonate){
+            try {
+                this.impersonationCredentials = kerberosImpersonate();
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
         }
+
     }
 
-    private void connect(){
+    private void connect(boolean impersonate){
 
-        if (impersonationCredentials != null) {
+        if (impersonate) {
             try {
                 // Create a connection for target service thanks S4U2proxy mechanism
-                Connection con = createConnection();
+                Connection con = createConnectionWithImpersonation();
+
+                ResultSet result = con.createStatement().executeQuery(getQuery());
+                while (result.next()) {
+                    System.out.println(" User on DB: " + result.getString(1)); // .getString("SYSTEM_USER"));
+                }
+            } catch (Exception ex) {
+
+                System.out.println(" Exception caught in createConnection ");
+                ex.printStackTrace();
+            }
+        } else {
+            try {
+                Connection con = createConnectionWithRunAs();
 
                 ResultSet result = con.createStatement().executeQuery(getQuery());
                 while (result.next()) {
@@ -83,8 +110,9 @@ public class ConstrainedDelegationSample {
         System.setProperty("java.security.krb5.conf", args[0]);
         System.setProperty("sun.security.krb5.debug", "true");
 
-        ConstrainedDelegationSample sample = new ConstrainedDelegationSample(args[1], args[2], args[3]);
-        sample.connect();
+
+        ConstrainedDelegationSample sample = new ConstrainedDelegationSample(args[1], args[2], args[3], args[4], Boolean.parseBoolean(args[5]), args[6], args[7]);
+        sample.connect(Boolean.parseBoolean(args[5]));
     }
 
     private Subject doInitialLogin(String keytabPath) throws Exception{
@@ -98,7 +126,7 @@ public class ConstrainedDelegationSample {
             throw e;
         }
 
-        System.setProperty("sun.security.krb5.debug", String.valueOf(false));
+        System.setProperty("sun.security.krb5.debug", String.valueOf(true));
 
         Map<String, String> options = new HashMap<>();
         options.put("principal", runAsUser);
@@ -146,8 +174,21 @@ public class ConstrainedDelegationSample {
         });
     }
 
+    private Connection createConnectionWithRunAs()
+            throws PrivilegedActionException {
 
-    private Connection createConnection()
+        return Subject.doAs(this.serviceSubject, (PrivilegedExceptionAction<Connection>) () -> {
+
+            Properties driverProperties = new Properties();
+            // These are driver specific properties for enabling Kerberos GSSAPI login - the ones here are valid for Postgres
+            try (InputStream is = Files.newInputStream(Paths.get(this.propertyFilePath))) {
+                driverProperties.load(is);
+            }
+            return DriverManager.getConnection(this.connectionURI, driverProperties);
+        });
+    }
+
+    private Connection createConnectionWithImpersonation()
             throws PrivilegedActionException {
 
         this.serviceSubject.getPrivateCredentials().add(this.impersonationCredentials);
@@ -156,10 +197,18 @@ public class ConstrainedDelegationSample {
 
             Properties driverProperties = new Properties();
             // These are driver specific properties for enabling Kerberos GSSAPI login - the ones here are valid for Postgres
-            driverProperties.put("gsslib", "gssapi");
-            driverProperties.put("user", this.impersonatedUser);
-            return DriverManager.getConnection(CONNECTION_URI, driverProperties);
+          //  driverProperties.put("gsslib", "gssapi");
+          //  driverProperties.put("user", this.impersonatedUser);
+            try (InputStream is = Files.newInputStream(Paths.get(this.propertyFilePath))) {
+                driverProperties.load(is);
+            }
+            return DriverManager.getConnection(this.connectionURI, driverProperties);
         });
+    }
+
+    private void loadJAASConfiguration() throws Exception {
+        System.out.println("Loading JAAS configuration.");
+        System.setProperty("java.security.auth.login.config", this.jaasFilePath);
     }
 
     protected String getQuery() {
